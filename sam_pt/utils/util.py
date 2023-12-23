@@ -12,7 +12,7 @@ import wandb
 from datetime import datetime
 from enum import IntEnum
 from typing import List, Any, Optional, Tuple
-
+from tqdm import tqdm
 
 class Object(object):
     """
@@ -327,6 +327,15 @@ def add_mask_to_frame(frame: np.ndarray, mask: Optional[np.ndarray], color: Tupl
     masked_frame = masked_frame.astype(np.uint8)
     return masked_frame
 
+import sys
+def do_system(args):
+    
+	print(f"==== running: {args}")
+	err = os.system(args)
+	if err:
+		print("FATAL: command failed")
+		sys.exit(err)
+          
 
 def visualize_predictions(
         images,
@@ -348,6 +357,8 @@ def visualize_predictions(
         annot_line_width=4,
         visualize_query_masks=True,
         contour_radius=3,
+        save_to_disk_only=None,
+        cam_folder=None,
 ):
     """
     Visualize predictions of query masks, predicted masks, and trajectories onto images and log them to wandb.
@@ -393,7 +404,11 @@ def visualize_predictions(
         If True, visualize the query masks. Default is True.
     contour_radius : int, optional
         The radius for the contour around each mask. Default is 3.
-
+    save_to_disk_only : string, optional
+        If text provided, it will save the images to disk only, and not log them to wandb. Default is None.
+        Text is used as a output folder name.
+    cam_folder : string, optional
+        If text provided, it will save to separate camera_view folder. Default is None.
     Returns
     -------
     List[ndarray]
@@ -449,7 +464,27 @@ def visualize_predictions(
 
     # 1. Visualize the input frames
     frames = images.permute(0, 2, 3, 1).cpu().numpy()
-    log_video_to_wandb("verbose/input-only", frames, fps=fps, step=step)
+
+
+    if save_to_disk_only is not None and cam_folder is not None:
+        num_len = len(str(n_frames))
+        if not os.path.exists(f'{save_to_disk_only}/{cam_folder}/rgb'):
+            os.makedirs(f'{save_to_disk_only}/{cam_folder}/rgb')
+        # Save the input frames to disk
+        for frame_idx in tqdm(range(n_frames)):
+            frame = frames[frame_idx]
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            frame = put_debug_text_onto_image(frame, frame_debug_text[frame_idx])
+            # cv2.imwrite(f"frame-{frame_idx}.png", frame)
+            cv2.imwrite(f'{save_to_disk_only}/{cam_folder}/rgb/{str(frame_idx).zfill(num_len)}.png', frame)
+        # make video with ffmpeg
+        # ffmpeg -framerate 30 -i %03d.png -c:v libx264 -pix_fmt yuv420p output.mp4
+        do_system(f"ffmpeg -framerate 30 -i {save_to_disk_only}/{cam_folder}/rgb/%0{num_len}d.png -c:v libx264 -pix_fmt yuv420p {save_to_disk_only}/{cam_folder}/rgb/output.mp4")
+        # delete images
+        # do_system(f"rm -rf {save_to_disk_only}/{cam_folder}/rgb/*.png")
+        print("Done visualizing predictions. Time taken: {:.2f}s".format(time.time() - start_time))
+    else:        
+        log_video_to_wandb("verbose/input-only", frames, fps=fps, step=step)
 
     # 2. Visualize the query masks
     if visualize_query_masks:
@@ -482,7 +517,11 @@ def visualize_predictions(
                                             query_point_color, annot_line_width)
             wandb_caption = f"mask={mask_idx}: m2f_score={query_scores[mask_idx].item():.3f} query_frame={query_timestep}"
             wandb_image = wandb.Image(overlaid_frame, caption=wandb_caption)
-            wandb.log({f"query-proposals/mask-{mask_idx}": wandb_image}, step=step)
+
+            if(save_to_disk_only is not None and cam_folder is not None):
+                continue
+            else:
+                wandb.log({f"query-proposals/mask-{mask_idx}": wandb_image}, step=step)
 
     # 3.1. Visualize the predicted masks
     trajectories = torch.nan_to_num(trajectories, nan=-1.)
@@ -506,7 +545,27 @@ def visualize_predictions(
             masked_image = add_mask_to_frame(masked_image, contour_mask, [1, 1, 1], alpha=0.1)
         masked_image = put_debug_text_onto_image(masked_image, frame_debug_text[frame_idx])
         masked_images += [masked_image]
-    log_video_to_wandb("verbose/predictions-only", masked_images, fps=fps, step=step)
+    
+    if save_to_disk_only is not None and cam_folder is not None:
+        num_len = len(str(n_frames))
+        if not os.path.exists(f'{save_to_disk_only}/{cam_folder}/masks_sam_pt'):
+            os.makedirs(f'{save_to_disk_only}/{cam_folder}/masks_sam_pt')
+        # Save the input frames to disk
+        for frame_idx in tqdm(range(n_frames)):
+            frame = masked_images[frame_idx]
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            frame = put_debug_text_onto_image(frame, frame_debug_text[frame_idx])
+
+            cv2.imwrite(f'{save_to_disk_only}/{cam_folder}/masks_sam_pt/{str(frame_idx).zfill(num_len)}.png', frame)
+        # make video with ffmpeg
+        # ffmpeg -framerate 30 -i %03d.png -c:v libx264 -pix_fmt yuv420p output.mp4
+        do_system(f"ffmpeg -framerate 30 -i {save_to_disk_only}/{cam_folder}/masks_sam_pt/%0{num_len}d.png -c:v libx264 -pix_fmt yuv420p {save_to_disk_only}/{cam_folder}/masks_sam_pt/output.mp4")
+        # delete images
+        do_system(f"rm -rf {save_to_disk_only}/{cam_folder}/masks_sam_pt/*.png")
+
+        print("Done visualizing masked predictions. Time taken: {:.2f}s".format(time.time() - start_time))
+    else:        
+        log_video_to_wandb("verbose/predictions-only", masked_images, fps=fps, step=step)
 
     # 3.2. Add the predicted trajectories on top of the predicted masks
     for frame_idx in range(n_frames):
@@ -539,7 +598,27 @@ def visualize_predictions(
                 masked_image = cv2.putText(masked_image, f"{i:03}", (int(point[0]), int(point[1])),
                                            fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.3, color=(250, 225, 100))
         masked_images[frame_idx] = masked_image
-    log_video_to_wandb("verbose/predictions-with-trajectories", masked_images, fps=fps, step=step)
+
+    if save_to_disk_only is not None and cam_folder is not None:
+        if not os.path.exists(f'{save_to_disk_only}/{cam_folder}/masks_sam_pt_trajectories'):
+            os.makedirs(f'{save_to_disk_only}/{cam_folder}/masks_sam_pt_trajectories')
+        # Save the input frames to disk
+        for frame_idx in tqdm(range(n_frames)):
+            frame = masked_images[frame_idx]
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            frame = put_debug_text_onto_image(frame, frame_debug_text[frame_idx])
+
+            cv2.imwrite(f'{save_to_disk_only}/{cam_folder}/masks_sam_pt_trajectories/{str(frame_idx).zfill(num_len)}.png', frame)
+
+        # make video with ffmpeg
+        # ffmpeg -framerate 30 -i %03d.png -c:v libx264 -pix_fmt yuv420p output.mp4
+        do_system(f"ffmpeg -framerate 30 -i {save_to_disk_only}/{cam_folder}/masks_sam_pt_trajectories/%0{num_len}d.png -c:v libx264 -pix_fmt yuv420p {save_to_disk_only}/{cam_folder}/masks_sam_pt_trajectories/output.mp4")
+        # delete images
+        do_system(f"rm -rf {save_to_disk_only}/{cam_folder}/masks_sam_pt_trajectories/*.png")
+        
+        print("Done visualizing masked predictions. Time taken: {:.2f}s".format(time.time() - start_time))
+    else:
+        log_video_to_wandb("verbose/predictions-with-trajectories", masked_images, fps=fps, step=step)
 
     # 4. Visualize the input frames with the predicted trajectories
     frames_with_trajectories = frames.copy()
@@ -577,7 +656,26 @@ def visualize_predictions(
         frames_with_trajectories[frame_idx] = put_debug_text_onto_image(
             frames_with_trajectories[frame_idx], frame_debug_text[frame_idx]
         )
-    log_video_to_wandb("verbose/input-with-trajectories", frames_with_trajectories, fps=fps, step=step)
+
+    if save_to_disk_only is not None and cam_folder is not None:
+        if(not os.path.exists(f'{save_to_disk_only}/{cam_folder}/input_with_trajectories')):
+            os.makedirs(f'{save_to_disk_only}/{cam_folder}/input_with_trajectories')
+        # Save the input frames to disk
+        for frame_idx in tqdm(range(n_frames)):
+            frame = frames_with_trajectories[frame_idx]
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            frame = put_debug_text_onto_image(frame, frame_debug_text[frame_idx])
+
+            cv2.imwrite(f'{save_to_disk_only}/{cam_folder}/input_with_trajectories/{str(frame_idx).zfill(num_len)}.png', frame)
+        
+        # make video with ffmpeg
+        # ffmpeg -framerate 30 -i %03d.png -c:v libx264 -pix_fmt yuv420p output.mp4
+        do_system(f"ffmpeg -framerate 30 -i {save_to_disk_only}/{cam_folder}/input_with_trajectories/%0{num_len}d.png -c:v libx264 -pix_fmt yuv420p {save_to_disk_only}/{cam_folder}/input_with_trajectories/output.mp4")
+        # delete images
+        do_system(f"rm -rf {save_to_disk_only}/{cam_folder}/input_with_trajectories/*.png")
+        print("Done visualizing masked predictions. Time taken: {:.2f}s".format(time.time() - start_time))
+    else:
+        log_video_to_wandb("verbose/input-with-trajectories", frames_with_trajectories, fps=fps, step=step)
 
     # 5. Visualize the input frames with the predicted trajectories and the predicted masks
     concatenated = [
@@ -595,7 +693,26 @@ def visualize_predictions(
             for additional_log_frame, frame
             in zip(additional_log_images, concatenated)
         ]
-    log_video_to_wandb("predictions/sam_video_masks", concatenated, fps=fps, step=step)
+
+    if save_to_disk_only is not None and cam_folder is not None:
+        if(not os.path.exists(f'{save_to_disk_only}/{cam_folder}/input_with_trajectories_and_masks')):
+            os.makedirs(f'{save_to_disk_only}/{cam_folder}/input_with_trajectories_and_masks')
+        # Save the input frames to disk
+        for frame_idx in tqdm(range(n_frames)):
+            frame = concatenated[frame_idx]
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            frame = put_debug_text_onto_image(frame, frame_debug_text[frame_idx])
+
+            cv2.imwrite(f'{save_to_disk_only}/{cam_folder}/input_with_trajectories_and_masks/{str(frame_idx).zfill(num_len)}.png', frame)
+        # make video with ffmpeg
+        # ffmpeg -framerate 30 -i %03d.png -c:v libx264 -pix_fmt yuv420p output.mp4
+        do_system(f"ffmpeg -framerate 30 -i {save_to_disk_only}/{cam_folder}/input_with_trajectories_and_masks/%0{num_len}d.png -c:v libx264 -pix_fmt yuv420p {save_to_disk_only}/{cam_folder}/input_with_trajectories_and_masks/output.mp4")
+        # delete images
+        do_system(f"rm -rf {save_to_disk_only}/{cam_folder}/input_with_trajectories_and_masks/*.png")
+
+        print("Done visualizing masked predictions. Time taken: {:.2f}s".format(time.time() - start_time))
+    else:
+        log_video_to_wandb("predictions/sam_video_masks", concatenated, fps=fps, step=step)
 
     print("Done visualizing predictions. Time taken: {:.2f}s".format(time.time() - start_time))
 

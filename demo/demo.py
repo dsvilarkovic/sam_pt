@@ -28,6 +28,7 @@ from hydra.utils import instantiate
 from matplotlib import pyplot as plt
 from omegaconf import OmegaConf
 from time import sleep
+from tqdm import tqdm
 
 from sam_pt.utils.util import visualize_predictions
 
@@ -42,6 +43,8 @@ def main(cfg):
     setup_logging(cfg)
 
     # Load data
+    # cfg.query_points_path = None
+    print(cfg.query_points_path)
     rgbs, positive_points_per_mask, query_points = load_data(cfg)
 
     # Load our checkpoint
@@ -54,9 +57,41 @@ def main(cfg):
     target_hw = (height, width)
     logits, trajectories, visibilities, scores = run_inference(model, rgbs, query_points, target_hw)
 
-    # Visualize predictions and save them to wandb
-    visualize_and_save_predictions(rgbs, query_points, target_hw, positive_points_per_mask,
-                                   logits, trajectories, visibilities, scores, cfg.annot_size, cfg.annot_line_width)
+    # save_sam_masks(rgbs, logits, trajectories, visibilities, scores, query_points, target_hw,
+                #    output_folder,
+                #    cam_folder='cam_0'):
+
+
+    # output_folder = '/local/home/dsvilarko/Downloads/green_screen_5/activities/basketball'
+
+    
+    cam_folder = cfg.frames_path.split('/')[-1]
+    output_folder = cfg.frames_path.split(cam_folder)[0]    
+
+    # output_folder = '/local/home/dsvilarko/Documents/farfield_data_scripts/image_500_samples/'
+    # cam_folder = 'cam_1'
+
+    # check if f'{output_folder}/masks_sam_pt/{cam_folder}' exists
+    if not os.path.exists(f'{output_folder}/masks_sam_pt/{cam_folder}'):
+        os.makedirs(f'{output_folder}/masks_sam_pt/{cam_folder}')
+    if not os.path.exists(f'{output_folder}/{cam_folder}/rgb_masked_sam_pt'):
+        os.makedirs(f'{output_folder}/{cam_folder}/rgb_masked_sam_pt')
+
+    if(cfg.save_sam_masks_to_disk):
+        save_sam_masks(rgbs, logits, trajectories, visibilities, scores, query_points,
+                    output_folder=output_folder,
+                    cam_folder=cam_folder)
+        
+        visualize_and_save_predictions(rgbs, query_points, target_hw, positive_points_per_mask,
+                                    logits, trajectories, visibilities, scores, cfg.annot_size, cfg.annot_line_width,
+                                    output_folder=output_folder,
+                                    cam_folder=cam_folder)
+    else:
+        # Visualize predictions and save them to wandb
+        visualize_and_save_predictions(rgbs, query_points, target_hw, positive_points_per_mask,
+                                    logits, trajectories, visibilities, scores, cfg.annot_size, cfg.annot_line_width,
+                                    output_folder=None,
+                                    cam_folder=None)
 
 
 def set_seed(seed):
@@ -155,8 +190,60 @@ def run_inference(model, rgbs, query_points, target_hw):
     return logits, trajectories, visibilities, scores
 
 
+def save_sam_masks(rgbs, logits, trajectories, visibilities, scores, query_points,
+                   output_folder,
+                   cam_folder='cam_0'):
+    # TODO : add query points to the rendered output
+    # logits: (1, n_frames, n_masks, height, width)
+    # rgbs: (n_frames, 3, height, width)
+
+    annot_size = 16
+    annot_line_width = 6
+    sam_masks_logits=logits[:, 1:, :, :].permute(1, 0, 2, 3)
+
+    sam_masks = sam_masks_logits > 0
+    n_frames = sam_masks.shape[1]
+
+    digit_number = len(str(n_frames))
+
+    # check if all imwrite folders exist
+    if not os.path.exists(f'{output_folder}/masks_sam_pt/{cam_folder}'):
+        os.makedirs(f'{output_folder}/masks_sam_pt/{cam_folder}')
+    if not os.path.exists(f'{output_folder}/{cam_folder}/rgb_masked_sam_pt'):
+        os.makedirs(f'{output_folder}/{cam_folder}/rgb_masked_sam_pt')
+
+
+
+    for frame_idx in tqdm(range(n_frames)):
+        sam_mask = sam_masks[:, frame_idx, :, :]
+        sam_mask = sam_mask.cpu().numpy()
+        sam_mask = sam_mask.astype(np.uint8)
+        sam_mask = sam_mask * 255
+        sam_mask = sam_mask.transpose(1, 2, 0)
+
+
+        # save mask
+        cv2.imwrite(f'{output_folder}/masks_sam_pt/{cam_folder}/{str(frame_idx).zfill(digit_number)}.png', sam_mask)
+        # save mask with rgb
+        # scale rgb
+        rgb = rgbs[frame_idx].cpu().permute(1, 2, 0).numpy()
+        rgb = rgb.astype(np.uint8)
+        # rgb = rgb.transpose(1,2,0)
+
+
+
+        rgb = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        rgb_masked = rgb * (sam_mask > 0)
+
+        cv2.imwrite(f'{output_folder}/{cam_folder}/rgb_masked_sam_pt/{str(frame_idx).zfill(digit_number)}.png', rgb_masked)
+
+
+
 def visualize_and_save_predictions(rgbs, query_points, target_hw, positive_points_per_mask,
-                                   logits, trajectories, visibilities, scores, annot_size, annot_line_width):
+                                   logits, trajectories, visibilities, scores, annot_size, annot_line_width,
+                                   output_folder=None,
+                                   cam_folder=None):
+    
     predictions_with_trajectories = visualize_predictions(
         images=F.interpolate(
             rgbs.float(),
@@ -173,7 +260,12 @@ def visualize_and_save_predictions(rgbs, query_points, target_hw, positive_point
         positive_points_per_mask=positive_points_per_mask,
         annot_size=annot_size,
         annot_line_width=annot_line_width,
+        save_to_disk_only=output_folder,
+        cam_folder=cam_folder,
     )
+    
+    if(output_folder is not None):
+        return
     i = 0
     while True:
         img = predictions_with_trajectories[i % len(predictions_with_trajectories)]
@@ -195,6 +287,13 @@ def load_demo_data(frames_path, query_points_path, frame_stride=1, longest_side_
     # Load frames
     frames = sorted(glob.glob(os.path.join(frames_path, '*.jpg')))
     frames += sorted(glob.glob(os.path.join(frames_path, '*.png')))
+
+    # import pdb 
+    # pdb.set_trace()
+
+    print('frames_path', frames_path)   
+    print('path current', glob.glob('*'))
+    print('path current', glob.glob('*'))
     assert len(frames) > 0, f"No frames found in {frames_path}"
 
     frames = frames[::frame_stride]
@@ -329,7 +428,7 @@ def load_demo_data_interactive(frames_path, query_points_path, frame_stride, lon
                 positions.clear()
                 print(f'Added query points for mask {len(timesteps)}, '
                       f'you can now select points for the next mask '
-                      f'or press esc to exit.')
+                      f'or press esc to exit (or just click X).')
                 print()
 
     cv2.namedWindow('sam-pt demo', flags=cv2.WINDOW_AUTOSIZE | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_NORMAL)
@@ -342,6 +441,11 @@ def load_demo_data_interactive(frames_path, query_points_path, frame_stride, lon
         # If user presses 'esc' exit
         if k == 27:
             break
+
+        if cv2.getWindowProperty('sam-pt demo', cv2.WND_PROP_VISIBLE) < 1:
+            break
+ 
+
 
     # Write data to a format that can be used by the point tracking script
     str = ''
