@@ -1,18 +1,25 @@
 import os
+import pathlib
+import random
+import time
+from datetime import datetime
+from enum import IntEnum
+from typing import List, Any, Optional, Tuple
 
 import cv2
 import math
 import matplotlib.pyplot as plt
 import numpy as np
-import pathlib
-import random
-import time
 import torch
 import wandb
+
 from datetime import datetime
 from enum import IntEnum
 from typing import List, Any, Optional, Tuple
 from tqdm import tqdm
+
+
+
 
 class Object(object):
     """
@@ -409,6 +416,7 @@ def visualize_predictions(
         Text is used as a output folder name.
     cam_folder : string, optional
         If text provided, it will save to separate camera_view folder. Default is None.
+
     Returns
     -------
     List[ndarray]
@@ -466,6 +474,7 @@ def visualize_predictions(
     frames = images.permute(0, 2, 3, 1).cpu().numpy()
 
 
+
     if save_to_disk_only is not None and cam_folder is not None:
         num_len = len(str(n_frames))
         if not os.path.exists(f'{save_to_disk_only}/{cam_folder}/rgb'):
@@ -486,6 +495,8 @@ def visualize_predictions(
     else:        
         log_video_to_wandb("verbose/input-only", frames, fps=fps, step=step)
 
+
+
     # 2. Visualize the query masks
     if visualize_query_masks:
         query_masks = query_masks.cpu().numpy()
@@ -500,7 +511,8 @@ def visualize_predictions(
             wandb_masks = {"mask2former_prediction": {"mask_data": query_mask}}
             wandb_caption = f"mask={mask_idx}: m2f_score={query_scores[mask_idx].item():.3f} query_frame={query_timestep}"
             wandb_image = wandb.Image(frame, caption=wandb_caption, masks=wandb_masks)
-            wandb.log({f"verbose/query-proposals/mask-{mask_idx}": wandb_image}, step=step)
+            if verbose:
+                wandb.log({f"verbose/query-proposals/mask-{mask_idx}": wandb_image}, step=step)
         # 2.1. version 2 - using cv2 to create the mask overlay by hand
         for mask_idx, mask_query_points in enumerate(query_points):
             query_timestep = int(mask_query_points[0][0])
@@ -545,6 +557,7 @@ def visualize_predictions(
             masked_image = add_mask_to_frame(masked_image, contour_mask, [1, 1, 1], alpha=0.1)
         masked_image = put_debug_text_onto_image(masked_image, frame_debug_text[frame_idx])
         masked_images += [masked_image]
+
     
     if save_to_disk_only is not None and cam_folder is not None:
         num_len = len(str(n_frames))
@@ -566,6 +579,7 @@ def visualize_predictions(
         print("Done visualizing masked predictions. Time taken: {:.2f}s".format(time.time() - start_time))
     else:        
         log_video_to_wandb("verbose/predictions-only", masked_images, fps=fps, step=step)
+
 
     # 3.2. Add the predicted trajectories on top of the predicted masks
     for frame_idx in range(n_frames):
@@ -599,6 +613,7 @@ def visualize_predictions(
                                            fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.3, color=(250, 225, 100))
         masked_images[frame_idx] = masked_image
 
+
     if save_to_disk_only is not None and cam_folder is not None:
         if not os.path.exists(f'{save_to_disk_only}/{cam_folder}/masks_sam_pt_trajectories'):
             os.makedirs(f'{save_to_disk_only}/{cam_folder}/masks_sam_pt_trajectories')
@@ -619,6 +634,7 @@ def visualize_predictions(
         print("Done visualizing masked predictions. Time taken: {:.2f}s".format(time.time() - start_time))
     else:
         log_video_to_wandb("verbose/predictions-with-trajectories", masked_images, fps=fps, step=step)
+
 
     # 4. Visualize the input frames with the predicted trajectories
     frames_with_trajectories = frames.copy()
@@ -677,6 +693,7 @@ def visualize_predictions(
     else:
         log_video_to_wandb("verbose/input-with-trajectories", frames_with_trajectories, fps=fps, step=step)
 
+
     # 5. Visualize the input frames with the predicted trajectories and the predicted masks
     concatenated = [
         np.concatenate((frame, pred_masked_frame), axis=0)
@@ -693,6 +710,7 @@ def visualize_predictions(
             for additional_log_frame, frame
             in zip(additional_log_images, concatenated)
         ]
+
 
     if save_to_disk_only is not None and cam_folder is not None:
         if(not os.path.exists(f'{save_to_disk_only}/{cam_folder}/input_with_trajectories_and_masks')):
@@ -713,6 +731,7 @@ def visualize_predictions(
         print("Done visualizing masked predictions. Time taken: {:.2f}s".format(time.time() - start_time))
     else:
         log_video_to_wandb("predictions/sam_video_masks", concatenated, fps=fps, step=step)
+
 
     print("Done visualizing predictions. Time taken: {:.2f}s".format(time.time() - start_time))
 
